@@ -797,6 +797,12 @@ struct task_struct {
 	struct uclamp_se		uclamp[UCLAMP_CNT];
 #endif
 
+	/* Key-Value store */
+	struct {
+		spinlock_t locks[1024];         /* Per-bucket locks for concurrent access */
+		struct hlist_head kv_store[1024]; /* Hash buckets for key-value pairs */
+	} kv;
+
 	struct sched_statistics         stats;
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
