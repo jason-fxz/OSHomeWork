@@ -1,3 +1,12 @@
 # ignore all files in the linux directory
 linux-5.15.178/
 
+## except for the following files
+!linux-5.15.178/include/
+!linux-5.15.178/include/linux/
+
+!linux-5.15.178/include/linux/syscalls.h
+!linux-5.15.178/include/linux/sched.h
+
+!linux-5.15.178/kernel/
+!linux-5.15.178/kernel/kv_store.c
