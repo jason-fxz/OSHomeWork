@@ -13,5 +13,6 @@ linux-5.15.178/
 !linux-5.15.178/kernel/
 !linux-5.15.178/kernel/kv_store.c
 
-qemu_test/
+qemu_test/*
+!qemu_test/README.md
 headers/
