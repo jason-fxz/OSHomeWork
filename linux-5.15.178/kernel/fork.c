@@ -110,7 +110,10 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/task.h>
 
-/*
+/* kv_init */
+int init_task_kv_store(struct task_struct *task);
+
+/*p
  * Minimum number of threads to boot the kernel
  */
 #define MIN_THREADS 20
@@ -2256,6 +2259,13 @@ static __latent_entropy struct task_struct *copy_process(
 	p->plug = NULL;
 #endif
 	futex_init_task(p);
+
+	/* init kv_store */
+	if (clone_flags & CLONE_THREAD) { /* new thread */
+		p->kv = current->kv;
+	} else { /* new process */
+		init_task_kv_store(p);
+	}
 
 	/*
 	 * sigaltstack should be cleared when sharing the same VM

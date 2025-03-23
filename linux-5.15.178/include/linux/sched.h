@@ -798,10 +798,10 @@ struct task_struct {
 #endif
 
 	/* Key-Value store */
-	struct {
+	struct kv_store {
 		spinlock_t locks[1024];         /* Per-bucket locks for concurrent access */
-		struct hlist_head kv_store[1024]; /* Hash buckets for key-value pairs */
-	} kv;
+		struct hlist_head head[1024];   /* Hash buckets for key-value pairs */
+	} *kv;
 
 	struct sched_statistics         stats;
 
