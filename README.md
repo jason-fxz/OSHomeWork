@@ -15,10 +15,13 @@ See tutorial at [https://github.com/peterzheng98/os-2024-tutorial](https://githu
 
 ### 系统调用
 
+[syscall](./syscall/)
+
 - [x] 基础：用户定义的系统调用
   - [x] learn: [Adding a New System Call](https://www.kernel.org/doc/html/v5.15/process/adding-syscalls.html)
   - [x] learn: Adding a New field to the `task_struct` [1](https://stackoverflow.com/questions/8044652/adding-entry-to-task-struct-and-initializing-to-default-value) [2](https://www.linuxquestions.org/questions/programming-9/adding-a-new-field-to-task_struct-310638/)
-- [ ] 实践：vDSO
+- [x] 实践：vDSO
+  - [x] learn [vDSO](https://zhuanlan.zhihu.com/p/436454953)
 - [ ] 设计：无需中断的系统调用
 
 ### 内存管理
