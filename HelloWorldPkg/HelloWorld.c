@@ -4,6 +4,7 @@
 #include <Library/BaseMemoryLib.h>
 #include <Guid/Acpi.h>
 #include <IndustryStandard/Acpi.h>
+#include <Library/MemoryAllocationLib.h>
 
 
 VOID
@@ -48,7 +49,7 @@ PrintAcpiHeader(
   Print(L"Address      : 0x%p\n", Header);
   Print(L"Length       : %d\n", Header->Length);
   Print(L"Revision     : %d\n", Header->Revision);
-  Print(L"Checksum     : %d\n", Header->Checksum);
+  Print(L"Checksum     : %x\n", Header->Checksum);
   Print(L"OEM ID       : ");
   for (UINTN i = 0; i < 6; i++) {
     Print(L"%c", Header->OemId[i]);
@@ -184,12 +185,10 @@ ModifyACPITable
     UINT32    CreatorRevision;
   } EFI_ACPI_DESCRIPTION_HEADER;
   */
+
   CopyMem(entry, NewTable, NewTable->Length);
   entry->Checksum = 0;
-  for (UINTN i = 0; i < entry->Length; i++)
-  {
-    entry->Checksum ^= ((UINT8*)entry)[i];
-  }
+  entry->Checksum = CalculateCheckSum8((UINT8*)entry, entry->Length);
 }
 
 
@@ -288,19 +287,25 @@ UefiMain(
   EFI_ACPI_DESCRIPTION_HEADER* entry = GetACPITable(EFI_ACPI_6_0_MULTIPLE_APIC_DESCRIPTION_TABLE_SIGNATURE);
   if (entry != NULL)
   {
-    EFI_ACPI_DESCRIPTION_HEADER NewTable = {
-      EFI_ACPI_6_0_MULTIPLE_APIC_DESCRIPTION_TABLE_SIGNATURE,
-      sizeof(EFI_ACPI_DESCRIPTION_HEADER),
-      0,
-      0,
-      {'M','Y','O','E','M','I'},
-      0,
-      0,
-      0,
-      0
-    };
-    ModifyACPITable(entry, &NewTable);
+    EFI_ACPI_DESCRIPTION_HEADER* NewTable = AllocatePool(entry->Length);
+    Print(L"Found ACPI table\n");
+
+    PrintAcpiHeader(entry);
+    CopyMem(NewTable, entry, entry->Length);
+
+
+    NewTable->OemId[0] = 'A';
+    NewTable->OemId[1] = 'B';
+    NewTable->OemId[2] = 'C';
+    NewTable->OemId[3] = 'D';
+    NewTable->OemId[4] = 'E';
+    NewTable->OemId[5] = 'F';
+
+    ModifyACPITable(entry, NewTable);
+    Print(L"Modified ACPI table\n");
+    PrintAcpiHeader(entry);
+    FreePool(NewTable);
   }
-  PrintAcpiHeader(entry);
+  // PrintAcpiHeader(entry);
   return EFI_SUCCESS;
 }
