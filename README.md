@@ -11,7 +11,8 @@ See tutorial at [https://github.com/peterzheng98/os-2024-tutorial](https://githu
   - [./HelloWorldPkg/HelloWorld.c](./HelloWorldPkg/HelloWorld.c)
 - [x] 实践：Hack ACPI Table
   - [./HelloWorldPkg/HelloWorld.c](./HelloWorldPkg/HelloWorld.c)
-- [ ] 设计：UEFI 运行时服务
+- [x] 设计：UEFI 运行时服务
+  - [x] learn: [DXE Runtime Driver](https://tianocore-docs.github.io/edk2-ModuleWriteGuide/draft/8_dxe_drivers_non-uefi_drivers/88_dxe_runtime_driver.html)
 
 ### 系统调用
 

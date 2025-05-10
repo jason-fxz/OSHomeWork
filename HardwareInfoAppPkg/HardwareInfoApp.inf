@@ -1,0 +1,30 @@
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = HardwareInfoApp
+  FILE_GUID                      = 848ab9c8-0ea9-4e92-b122-55f67f0874d5
+  MODULE_TYPE                    = DXE_RUNTIME_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = RuntimeInfoEntryPoint
+
+[Sources]
+  HardwareInfoApp.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  UefiLib
+  PrintLib
+  DebugLib
+  BaseMemoryLib
+  MemoryAllocationLib
+
+[Protocols]
+  gEfiAcpiTableProtocolGuid     ## CONSUMES
+
+[Depex]
+  gEfiAcpiTableProtocolGuid

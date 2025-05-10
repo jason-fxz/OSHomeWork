@@ -1,0 +1,114 @@
+#include <Uefi.h>
+#include <Library/UefiLib.h>
+#include <Library/PrintLib.h>
+#include <Library/DebugLib.h>
+#include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
+#include <Library/BaseMemoryLib.h> // 用于 CopyMem
+#include <Library/MemoryAllocationLib.h> // 如果需要 AllocatePool
+
+//
+// 为我们的硬件信息变量定义 GUID
+// {1F68C293-987A-4D5F-9A9B-70D7F1B0A0E2}
+// 我们依然使用同样的 GUID，便于 Linux 端检测识别
+#define HARDWARE_INFO_VARIABLE_GUID \
+  { 0x1f68c293, 0x987a, 0x4d5f, { 0x9a, 0x9b, 0x70, 0xd7, 0xf1, 0xb0, 0xa0, 0xe2 } }
+
+EFI_GUID gHardwareInfoVariableGuid = HARDWARE_INFO_VARIABLE_GUID;
+
+// 变量名定义
+#define HARDWARE_INFO_VARIABLE_NAME L"HardwareInfo"
+
+//
+// 我们想要导出的硬件信息的结构
+//
+typedef struct {
+  CHAR8   CpuModel[128];
+  UINT64  TotalMemoryMb;
+  // 根据需要添加更多字段
+} HARDWARE_INFO_DATA;
+
+//
+// 静态分配的硬件信息实例
+//
+HARDWARE_INFO_DATA mHardwareInfoData;
+
+/**
+  更新硬件信息 EFI 变量。
+  这个函数更新或创建我们的硬件信息变量。
+
+  @retval EFI_SUCCESS     变量更新成功。
+  @retval 其他            发生错误。
+**/
+EFI_STATUS
+UpdateHardwareInfoVariable (
+  VOID
+  )
+{
+  EFI_STATUS Status;
+  
+  // 使用 EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS 表示
+  // 这个变量在 OS 运行时可访问
+  Status = gRT->SetVariable(
+                  HARDWARE_INFO_VARIABLE_NAME,
+                  &gHardwareInfoVariableGuid,
+                  EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+                  sizeof(HARDWARE_INFO_DATA),
+                  &mHardwareInfoData
+                  );
+                  
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "HardwareInfoApp: 设置硬件信息变量失败: %r\n", Status));
+    return Status;
+  }
+  
+  DEBUG((DEBUG_INFO, "HardwareInfoApp: 硬件信息变量已成功更新或创建。\n"));
+  return EFI_SUCCESS;
+}
+
+/**
+  此 DXE_RUNTIME_DRIVER 的入口点。
+
+  @param[in] ImageHandle  固件为 EFI 映像分配的句柄。
+  @param[in] SystemTable  指向 EFI 系统表的指针。
+
+  @retval EFI_SUCCESS     入口点成功执行。
+  @retval other           发生了一些错误。
+**/
+EFI_STATUS
+EFIAPI
+RuntimeInfoEntryPoint (
+  IN EFI_HANDLE        ImageHandle,
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  Print(L"HardwareInfoApp: 入口点已到达。\n");
+  
+  EFI_STATUS Status;
+
+  DEBUG ((DEBUG_INFO, "HardwareInfoApp: _ModuleEntryPoint 已到达。\n"));
+
+  // 收集硬件信息示例
+  AsciiSPrint(mHardwareInfoData.CpuModel,
+              sizeof(mHardwareInfoData.CpuModel),
+              "QuadCore Generic CPU @ 3.0GHz"); // 示例 CPU 型号
+  mHardwareInfoData.TotalMemoryMb = 4096; // 示例: 4GB 内存
+  
+  // 更多硬件信息收集可以放在这里，例如：
+  // - 获取真实 CPU 信息 (从 CPUID 指令)
+  // - 检测真实内存大小 (从 UEFI Memory Map)
+  // - 获取主板信息 (从 SMBIOS)
+  // - 检测显卡信息 (从 GOP 或 PCI)
+  // - 等等
+
+  // 将硬件信息写入 UEFI 变量
+  Status = UpdateHardwareInfoVariable();
+  if (EFI_ERROR(Status)) {
+    return Status;
+  }
+
+  Print(L"硬件信息已成功存储到 UEFI 变量中。\n");
+  DEBUG((DEBUG_INFO, "HardwareInfoApp: 硬件信息已成功存储到 UEFI 变量中。\n"));
+
+  return EFI_SUCCESS;
+}
