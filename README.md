@@ -34,7 +34,7 @@ See tutorial at [https://github.com/peterzheng98/os-2024-tutorial](https://githu
 ### 文件系统
 
 - [x] 基础：inode 和扩展属性管理
-- [ ] 实践：FUSE
+- [x] 实践：FUSE
 - [ ] 设计：用户空间下的内存磁盘
 
 ### 网络与外部设备
