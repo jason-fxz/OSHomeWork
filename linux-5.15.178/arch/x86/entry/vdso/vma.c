@@ -54,6 +54,7 @@ void __init init_vdso_image(const struct vdso_image *image)
 }
 
 static const struct vm_special_mapping vvar_mapping;
+static const struct vm_special_mapping vtask_mapping;
 struct linux_binprm;
 
 static vm_fault_t vdso_fault(const struct vm_special_mapping *sm,
@@ -228,6 +229,24 @@ static vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
 	return VM_FAULT_SIGBUS;
 }
 
+#define VTASK_SIZE  ALIGN(sizeof(struct task_struct), PAGE_SIZE)
+
+static vm_fault_t vtask_fault(const struct vm_special_mapping *sm,
+                      struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+	// 支持多页映射，每一页映射 task_struct 的对应物理页
+	pr_info("vtask_fault: vma->vm_start = %lx, vma->vm_end = %lx, vmf->pgoff = %lx\n",
+		vma->vm_start, vma->vm_end, vmf->pgoff);
+		
+	unsigned long offset = vmf->pgoff << PAGE_SHIFT;
+	pr_info("offset = %lx, current = %p, pid = %d\n", offset, current, current->pid);
+	if (offset >= VTASK_SIZE)
+		return VM_FAULT_SIGBUS;
+
+	return vmf_insert_pfn(vma, vmf->address,
+						 (__pa((char *)current + offset)) >> PAGE_SHIFT);
+}
+
 static const struct vm_special_mapping vdso_mapping = {
 	.name = "[vdso]",
 	.fault = vdso_fault,
@@ -237,6 +256,10 @@ static const struct vm_special_mapping vvar_mapping = {
 	.name = "[vvar]",
 	.fault = vvar_fault,
 };
+static const struct vm_special_mapping vtask_mapping = {
+    .name = "[vtask]",
+    .fault = vtask_fault,
+};
 
 /*
  * Add vdso and vvar mappings to current process.
@@ -245,23 +268,34 @@ static const struct vm_special_mapping vvar_mapping = {
  */
 static int map_vdso(const struct vdso_image *image, unsigned long addr)
 {
+	pr_info("map_vdso: mapping vdso image at addr 0x%lx (image size: 0x%lx, vvar offset: 0x%lx)\n",
+		addr, image->size, image->sym_vvar_start);
+	pr_info("current pid: %d command: %s kaddr: %p\n", current->pid, current->comm, current);
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
 	unsigned long text_start;
+	unsigned long vtask_start;
+	unsigned long vvar_start;
+	unsigned long vvar_size = -image->sym_vvar_start;
 	int ret = 0;
 
 	if (mmap_write_lock_killable(mm))
 		return -EINTR;
 
+
+	pr_info("fucksize = %lx\n", image->size - image->sym_vvar_start + VTASK_SIZE);
 	addr = get_unmapped_area(NULL, addr,
-				 image->size - image->sym_vvar_start, 0, 0);
+				 image->size - image->sym_vvar_start + VTASK_SIZE, 0, 0);
 	if (IS_ERR_VALUE(addr)) {
 		ret = addr;
 		goto up_fail;
 	}
 
-	text_start = addr - image->sym_vvar_start;
+	vtask_start = addr;
+	vvar_start = addr + VTASK_SIZE;
+	text_start = addr + VTASK_SIZE + vvar_size;
 
+	pr_info("map_vdso: trying to map vdso area addr=%lx size=%lx\n", text_start, image->size);
 	/*
 	 * MAYWRITE to allow gdb to COW and set breakpoints
 	 */
@@ -277,20 +311,52 @@ static int map_vdso(const struct vdso_image *image, unsigned long addr)
 		goto up_fail;
 	}
 
-	vma = _install_special_mapping(mm,
-				       addr,
-				       -image->sym_vvar_start,
-				       VM_READ|VM_MAYREAD|VM_IO|VM_DONTDUMP|
-				       VM_PFNMAP,
-				       &vvar_mapping);
+	pr_info("map_vdso: trying to map vvar area addr=%lx size=%lx\n", vvar_start, vvar_size);
+	// 映射vvar区域
+    vma = _install_special_mapping(mm,
+					   vvar_start,
+                       vvar_size,
+                       VM_READ|VM_MAYREAD|VM_IO|VM_DONTDUMP|
+                       VM_PFNMAP,
+                       &vvar_mapping);
 
-	if (IS_ERR(vma)) {
-		ret = PTR_ERR(vma);
-		do_munmap(mm, text_start, image->size, NULL);
-	} else {
-		current->mm->context.vdso = (void __user *)text_start;
-		current->mm->context.vdso_image = image;
-	}
+    if (IS_ERR(vma)) {
+        ret = PTR_ERR(vma);
+        do_munmap(mm, text_start, image->size, NULL);
+        goto up_fail;
+    }
+	
+
+	pr_info("map_vdso: trying to map vtask area addr=%lx size=%lx\n", vtask_start, VTASK_SIZE);
+
+    // 映射task_struct到vvar紧邻的区域
+    vma = _install_special_mapping(mm,
+					  vtask_start, 
+                      VTASK_SIZE,
+                      VM_READ|VM_MAYREAD|VM_DONTDUMP|VM_IO|VM_PFNMAP,
+                      &vtask_mapping);
+     
+    if (IS_ERR(vma)) {
+		// debug
+		pr_info("map_vdso: ERROR: Failed to install vtask mapping\n");
+		struct vm_area_struct *tmp;
+		pr_info("map_vdso: Dumping all VMAs for current process (pid=%d):\n", current->pid);
+		for (tmp = mm->mmap; tmp; tmp = tmp->vm_next) {
+			pr_info("  VMA: start=0x%lx end=0x%lx flags=0x%lx name=%s\n",
+					tmp->vm_start, tmp->vm_end, tmp->vm_flags,
+					tmp->vm_file ? (tmp->vm_file->f_path.dentry->d_name.name) :
+					(tmp->vm_ops && tmp->vm_ops->name ? tmp->vm_ops->name : ""));
+		}
+
+        ret = PTR_ERR(vma);
+		pr_info("ret = %d\n", ret);
+        do_munmap(mm, text_start, image->size, NULL);
+		do_munmap(mm, vvar_start, vvar_size, NULL);
+        goto up_fail;
+    }
+
+	current->mm->context.vdso = (void __user *)text_start;
+	current->mm->context.vdso_image = image;
 
 up_fail:
 	mmap_write_unlock(mm);
