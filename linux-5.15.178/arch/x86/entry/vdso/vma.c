@@ -27,6 +27,8 @@
 #include <asm/cpufeature.h>
 #include <clocksource/hyperv_timer.h>
 
+#include <linux/user_taskinfo.h>
+
 #undef _ASM_X86_VVAR_H
 #define EMIT_VVAR(name, offset)	\
 	const size_t name ## _offset = offset;
@@ -229,22 +231,50 @@ static vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
 	return VM_FAULT_SIGBUS;
 }
 
-#define VTASK_SIZE  ALIGN(sizeof(struct task_struct), PAGE_SIZE)
+#define VTASK_SIZE  (ALIGN(sizeof(struct task_struct), PAGE_SIZE) + PAGE_SIZE)
 
 static vm_fault_t vtask_fault(const struct vm_special_mapping *sm,
                       struct vm_area_struct *vma, struct vm_fault *vmf)
 {
-	// 支持多页映射，每一页映射 task_struct 的对应物理页
 	pr_info("vtask_fault: vma->vm_start = %lx, vma->vm_end = %lx, vmf->pgoff = %lx\n",
-		vma->vm_start, vma->vm_end, vmf->pgoff);
-		
+        vma->vm_start, vma->vm_end, vmf->pgoff);
+	
 	unsigned long offset = vmf->pgoff << PAGE_SHIFT;
-	pr_info("offset = %lx, current = %p, pid = %d\n", offset, current, current->pid);
+
 	if (offset >= VTASK_SIZE)
 		return VM_FAULT_SIGBUS;
 
-	return vmf_insert_pfn(vma, vmf->address,
-						 (__pa((char *)current + offset)) >> PAGE_SHIFT);
+	unsigned long task_struct_offset = __pa((char *)current) & (~PAGE_MASK);
+	pr_info("_pa(current) = %lx, offset = %ld\n", __pa(current), task_struct_offset);
+	// 第一个页面用于映射 task_struct_view
+	if (vmf->pgoff == 0) {
+		pr_info("create a page for task_struct_view \npage_offset=%lx pid=%d\n", task_struct_offset, current->pid);
+		// 创建一个页面
+		struct page *page;
+        struct my_task_struct_view *view;
+        
+        // 分配一个页面用于存放结构体视图
+        page = alloc_page(GFP_KERNEL);
+        if (!page)
+            return VM_FAULT_OOM;
+            
+        // 获取页面地址并填充结构体
+        view = page_address(page);
+        memset(view, 0, PAGE_SIZE);  // 清空页面
+        
+        // 填充结构体信息
+        view->page_offset = task_struct_offset;
+        view->pid = current->pid;
+        
+        // 将该页映射到用户空间
+        get_page(page);
+        vmf->page = page;
+        return 0;
+	} else {
+		return vmf_insert_pfn(vma, vmf->address,
+			(__pa((char *)current + offset - PAGE_SIZE)) >> PAGE_SHIFT);
+		
+	}		
 }
 
 static const struct vm_special_mapping vdso_mapping = {

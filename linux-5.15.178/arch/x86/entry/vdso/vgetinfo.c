@@ -10,14 +10,17 @@
 
 // vvar 区域大小，通常为 4 * PAGE_SIZE
 #define VVAR_SIZE   (4 * PAGE_SIZE)
-#define VTASK_SIZE  ALIGN(sizeof(struct task_struct), PAGE_SIZE)
+#define VTASK_SIZE  (ALIGN(sizeof(struct task_struct), PAGE_SIZE) + PAGE_SIZE)
 
 extern char vvar_page;
 
 static inline void *get_task_addr(void)
 {
     // vtask 区域在 vvar 区域上方
-    return (void *)(&vvar_page - VTASK_SIZE);
+    struct my_task_struct_view *view;
+    view = (struct my_task_struct_view *)(&vvar_page - VVAR_SIZE);
+    
+    return (void *)((char *)view + view->page_offset + PAGE_SIZE); // 计算 task_struct 的内核虚拟地址
 }
 
 int __vdso_get_task_struct_info(struct task_info *info)
