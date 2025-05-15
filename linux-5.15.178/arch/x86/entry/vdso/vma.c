@@ -365,7 +365,7 @@ static int map_vdso(const struct vdso_image *image, unsigned long addr)
     vma = _install_special_mapping(mm,
 					  vtask_start, 
                       VTASK_SIZE,
-                      VM_READ|VM_MAYREAD|VM_DONTDUMP|VM_IO|VM_PFNMAP|VM_MAYSHARE,
+                      VM_READ|VM_MAYREAD|VM_DONTDUMP|VM_IO|VM_PFNMAP|VM_WIPEONFORK,
                       &vtask_mapping);
      
     if (IS_ERR(vma)) {

@@ -537,21 +537,6 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	for (mpnt = oldmm->mmap; mpnt; mpnt = mpnt->vm_next) {
 		struct file *file;
 
-		// 在这里添加检测和调试输出 [vtask] 类型 VMA 的代码
-        if (mpnt->vm_ops && mpnt->vm_ops->name) {
-            const char *name = mpnt->vm_ops->name(mpnt);
-            // 检查是否为 [vtask] 区域
-            if (strcmp(name, "[vtask]") == 0) {
-                pr_info("dup_mmap: found [vtask] VMA pid=%d start=%lx end=%lx flags=%lx\n",
-                        current->pid, mpnt->vm_start, mpnt->vm_end, mpnt->vm_flags);
-                
-                // 如果是 vtask 区域，我们清除现有页面映射，强制子进程在首次访问时
-                // 触发新的 page fault，这样就会为子进程创建正确的 task_struct 视图
-                zap_page_range(mpnt, mpnt->vm_start, mpnt->vm_end - mpnt->vm_start);
-                pr_info("dup_mmap: cleared [vtask] page mappings for child\n");
-            }
-        }
-
 		if (mpnt->vm_flags & VM_DONTCOPY) {
 			vm_stat_account(mm, mpnt->vm_flags, -vma_pages(mpnt));
 			continue;
