@@ -153,6 +153,8 @@ static inline struct page *find_timens_vvar_page(struct vm_area_struct *vma)
 static vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
 		      struct vm_area_struct *vma, struct vm_fault *vmf)
 {
+	pr_info("vvar_fault: vma->vm_start = %lx, vma->vm_end = %lx, vmf->pgoff = %lx\n",
+		vma->vm_start, vma->vm_end, vmf->pgoff);
 	const struct vdso_image *image = vma->vm_mm->context.vdso_image;
 	unsigned long pfn;
 	long sym_offset;
@@ -363,7 +365,7 @@ static int map_vdso(const struct vdso_image *image, unsigned long addr)
     vma = _install_special_mapping(mm,
 					  vtask_start, 
                       VTASK_SIZE,
-                      VM_READ|VM_MAYREAD|VM_DONTDUMP|VM_IO|VM_PFNMAP,
+                      VM_READ|VM_MAYREAD|VM_DONTDUMP|VM_IO|VM_PFNMAP|VM_MAYSHARE,
                       &vtask_mapping);
      
     if (IS_ERR(vma)) {
