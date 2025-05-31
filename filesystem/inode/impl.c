@@ -31,12 +31,12 @@ from /usr/include/asm/unistd_64.h
 */
 
 
-int get_xattr(const char *path, const char *name, char *value, size_t size) {
-   return syscall(__NR_getxattr, path, name, value, size);
+int get_xattr(const char *path, const char *name, char *value, size_t size, int flags) {
+   return syscall(__NR_getxattr, path, name, value, size, flags);
 }
 
-int set_xattr(const char *path, const char *name, const char *value, size_t size) {
-   return syscall(__NR_setxattr, path, name, value, size);
+int set_xattr(const char *path, const char *name, const char *value, size_t size, int flags) {
+   return syscall(__NR_setxattr, path, name, value, size, flags);
 }
 
 int remove_xattr(const char *path, const char *name) {
