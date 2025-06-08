@@ -1,2 +1,4 @@
-test_*
+test*
 !*.c
+!*.lua
+*.so
