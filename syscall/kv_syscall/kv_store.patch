@@ -1,0 +1,273 @@
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index 18b5500ea..344d1d6e0 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -370,6 +370,8 @@
+ 446	common	landlock_restrict_self	sys_landlock_restrict_self
+ 447	common	memfd_secret		sys_memfd_secret
+ 448	common	process_mrelease	sys_process_mrelease
++449	common	write_kv		sys_write_kv
++450	common	read_kv		sys_read_kv
+ 
+ #
+ # Due to a historical design error, certain syscalls are numbered differently
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 9b3cfe685..3e34a0a38 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -798,6 +798,12 @@ struct task_struct {
+ #endif
+ 
+ 	struct sched_statistics         stats;
++	/* Key-Value store */
++	struct {
++		spinlock_t        locks[1024]; /* Per-bucket locks for concurrent access */
++		struct hlist_head head[1024];  /* Hash buckets for key-value pairs */
++		int               ref_cnt;     /* Reference count for the store */
++	} *kv;
+ 
+ #ifdef CONFIG_PREEMPT_NOTIFIERS
+ 	/* List of struct preempt_notifier: */
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index b8037a46f..af58a0e1d 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -1279,6 +1279,12 @@ asmlinkage long sys_old_mmap(struct mmap_arg_struct __user *arg);
+  */
+ asmlinkage long sys_ni_syscall(void);
+ 
++/*
++ * KV_STORE syscalls
++ */
++asmlinkage long sys_write_kv(int k, int v);
++asmlinkage long sys_read_kv(int k);
++
+ #endif /* CONFIG_ARCH_HAS_SYSCALL_WRAPPER */
+ 
+ 
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index 17a5a317f..f1ace568f 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -880,8 +880,14 @@ __SYSCALL(__NR_memfd_secret, sys_memfd_secret)
+ #define __NR_process_mrelease 448
+ __SYSCALL(__NR_process_mrelease, sys_process_mrelease)
+ 
++#define __NR_write_kv 449
++__SYSCALL(__NR_write_kv, sys_write_kv)
++
++#define __NR_read_kv 450
++__SYSCALL(__NR_read_kv, sys_read_kv)
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 449
++#define __NR_syscalls 451
+ 
+ /*
+  * 32 bit systems traditionally used different
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 599cb9264..745318a25 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -10,7 +10,7 @@ obj-y     = fork.o exec_domain.o panic.o \
+ 	    extable.o params.o \
+ 	    kthread.o sys_ni.o nsproxy.o \
+ 	    notifier.o ksysfs.o cred.o reboot.o \
+-	    async.o range.o smpboot.o ucount.o regset.o
++	    async.o range.o smpboot.o ucount.o regset.o kv_store.o
+ 
+ obj-$(CONFIG_USERMODE_DRIVER) += usermode_driver.o
+ obj-$(CONFIG_MODULES) += kmod.o
+diff --git a/kernel/exit.c b/kernel/exit.c
+index 890e5cb67..448be0633 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -5,6 +5,7 @@
+  *  Copyright (C) 1991, 1992  Linus Torvalds
+  */
+ 
++#include "linux/printk.h"
+ #include <linux/mm.h>
+ #include <linux/slab.h>
+ #include <linux/sched/autogroup.h>
+@@ -66,6 +67,10 @@
+ #include <linux/io_uring.h>
+ #include <linux/sysfs.h>
+ 
++// Forward declaration for cleanup_kv_store
++struct task_struct; // Ensure task_struct is known, though likely already included
++void cleanup_kv_store(struct task_struct *task);
++
+ #include <linux/uaccess.h>
+ #include <asm/unistd.h>
+ #include <asm/mmu_context.h>
+@@ -872,6 +877,15 @@ void __noreturn do_exit(long code)
+ 		disassociate_ctty(1);
+ 	exit_task_namespaces(tsk);
+ 	exit_task_work(tsk);
++	if (--tsk->kv->ref_cnt == 0) {
++		/*
++		 * If the kv store is empty, we can free it now.
++		 * Otherwise, it will be freed when the last user
++		 * of the kv store exits.
++		 */
++		pr_info("Freeing kv store for task %d\n", tsk->pid);
++		cleanup_kv_store(tsk);
++	}
+ 	exit_thread(tsk);
+ 
+ 	/*
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 23ffcf8a8..ef17aac79 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -110,6 +110,9 @@
+ #define CREATE_TRACE_POINTS
+ #include <trace/events/task.h>
+ 
++/* init_kv_store declaration */
++void init_kv_store(struct task_struct *tsk);
++
+ /*
+  * Minimum number of threads to boot the kernel
+  */
+@@ -2257,6 +2260,14 @@ static __latent_entropy struct task_struct *copy_process(
+ #endif
+ 	futex_init_task(p);
+ 
++	/* init kv_store */
++	if (clone_flags & CLONE_THREAD) { /* new thread */
++		p->kv = current->kv;
++		p->kv->ref_cnt++;
++	} else {
++		init_kv_store(p);
++	}
++
+ 	/*
+ 	 * sigaltstack should be cleared when sharing the same VM
+ 	 */
+diff --git a/kernel/kv_store.c b/kernel/kv_store.c
+new file mode 100644
+index 000000000..365b9a74e
+--- /dev/null
++++ b/kernel/kv_store.c
+@@ -0,0 +1,119 @@
++/**
++ * KV_STORE syscalls
++ *
++ */
++
++#include <linux/kernel.h>
++#include <linux/sched.h>
++#include <linux/syscalls.h>
++#include <linux/spinlock.h>
++#include <linux/list.h>
++#include <linux/slab.h>
++
++// define the kv_node struct
++struct kv_node {
++    int key;
++    int value;
++    struct hlist_node node;
++};
++
++// asmlinkage long sys_write_kv(int k, int v); 449
++SYSCALL_DEFINE2(write_kv, int, k, int, v)
++{
++    struct kv_node *entry, *old_entry = NULL;
++    // struct hlist_node *tmp;
++    unsigned int hash = k & 1023; // k % 1024
++
++    // get current task
++    struct task_struct *task = current;
++
++    spin_lock(&task->kv->locks[hash]);
++
++    hlist_for_each_entry(entry, &task->kv->head[hash], node) {
++        if (entry->key == k) {
++            old_entry = entry;
++            break;
++        }
++    }
++
++    if (old_entry != NULL) {
++        // update the value
++        old_entry->value = v;
++    } else {
++        // create a new entry
++        entry = kmalloc(sizeof(struct kv_node), GFP_KERNEL);
++        if (!entry) {
++            spin_unlock(&task->kv->locks[hash]);
++            return -1; // memory allocation failed
++        }
++
++        entry->key = k;
++        entry->value = v;
++        hlist_add_head(&entry->node, &task->kv->head[hash]);
++    }
++    spin_unlock(&task->kv->locks[hash]);
++    return sizeof(int);
++}
++
++
++// asmlinkage long sys_read_kv(int k); 450
++SYSCALL_DEFINE1(read_kv, int, k)
++{
++    struct kv_node *entry;
++    int ret = -1;
++    unsigned int hash = k & 1023; // k % 1024
++
++    // get current task
++    struct task_struct *task = current;
++
++    spin_lock(&task->kv->locks[hash]);
++
++    hlist_for_each_entry(entry, &task->kv->head[hash], node) {
++        if (entry->key == k) {
++            ret = entry->value;
++            break;
++        }
++    }
++
++    spin_unlock(&task->kv->locks[hash]);
++    return ret;
++}
++
++void init_kv_store(struct task_struct *task)
++{
++    int i;
++
++    task->kv = kmalloc(sizeof(*task->kv), GFP_KERNEL);
++    if (!task->kv) {
++        pr_err("Failed to allocate memory for kv store\n");
++        return;
++    }
++
++    task->kv->ref_cnt = 1; // Initialize reference count
++    for (i = 0; i < 1024; i++) {
++        spin_lock_init(&task->kv->locks[i]);
++        INIT_HLIST_HEAD(&task->kv->head[i]);
++    }
++}
++
++void cleanup_kv_store(struct task_struct *task)
++{
++    int i;
++    struct kv_node *entry;
++    struct hlist_node *tmp;
++
++    if (!task->kv)
++        return;
++
++    for (i = 0; i < 1024; i++) {
++        spin_lock(&task->kv->locks[i]);
++        hlist_for_each_entry_safe(entry, tmp, &task->kv->head[i], node) {
++            hlist_del(&entry->node);
++            kfree(entry);
++        }
++        spin_unlock(&task->kv->locks[i]);
++    }
++
++    kfree(task->kv);
++    task->kv = NULL;
++}
