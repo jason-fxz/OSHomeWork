@@ -47,5 +47,7 @@ See tutorial at [https://github.com/peterzheng98/os-2024-tutorial](https://githu
 ### 网络与外部设备
 
 - [ ] 基础：tcpdump 和 socket 管理
+  - [x] learn: [数据包结构](https://zhuanlan.zhihu.com/p/532166995)
+  - [x] tcpdump [impl](./network/tcpdump/)
 - [ ] 实践：NCCL
 - [ ] 设计：DPDK
