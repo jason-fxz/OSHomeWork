@@ -1,0 +1,311 @@
+diff --git a/fs/ramfs/file-mmu.c b/fs/ramfs/file-mmu.c
+index 12af04903..c12cee895 100644
+--- a/fs/ramfs/file-mmu.c
++++ b/fs/ramfs/file-mmu.c
+@@ -28,6 +28,7 @@
+ #include <linux/mm.h>
+ #include <linux/ramfs.h>
+ #include <linux/sched.h>
++#include <linux/kmod.h> // For call_usermodehelper
+ 
+ #include "internal.h"
+ 
+@@ -38,11 +39,170 @@ static unsigned long ramfs_mmu_get_unmapped_area(struct file *file,
+ 	return current->mm->get_unmapped_area(file, addr, len, pgoff, flags);
+ }
+ 
++/* 使用 call_usermodehelper 调用 cp 命令进行文件同步 */
++static int ramfs_sync_with_cp(const char *source_path, const char *dest_path, const char *dest_dir)
++{
++	char *argv[5];
++	char *envp[] = {
++		"HOME=/",
++		"PATH=/sbin:/bin:/usr/bin",
++		NULL
++	};
++	int ret;
++
++	/* 确保目标目录存在 */
++	argv[0] = "/bin/mkdir";
++	argv[1] = "-p";
++	argv[2] = (char *)dest_dir;
++	argv[3] = NULL;
++
++	printk(KERN_INFO "ramfs: Executing: %s %s %s\n", argv[0], argv[1], argv[2]);
++
++	ret = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
++
++	/* 执行 cp 命令 */
++	argv[0] = "/bin/cp";
++	argv[1] = (char *)source_path;
++	argv[2] = (char *)dest_path;
++	argv[3] = NULL;
++
++	printk(KERN_INFO "ramfs: Executing: %s %s %s\n", argv[0], argv[1], argv[2]);
++	
++	ret = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
++	if (ret != 0) {
++		printk(KERN_ERR "ramfs: cp command failed, ret=%d\n", ret);
++		return ret;
++	}
++
++	printk(KERN_INFO "ramfs: Successfully copied %s to %s\n", source_path, dest_path);
++	return 0;
++}
++
++/* 构建相对于 ramfs 根目录的路径 */
++static char *build_relative_dir(struct dentry *dentry, struct dentry *root)
++{
++	struct dentry *temp = dentry;
++	char *path_components[32]; // max depth of 32 components
++	int depth = 0;
++	char *result = NULL;
++	int total_len = 0;
++	int i;
++
++	// search up until root or max depth
++	while (temp && temp != root && depth < 32) {
++		path_components[depth] = kstrdup(temp->d_name.name, GFP_KERNEL);
++		total_len += strlen(temp->d_name.name) + 1; /* +1 for '/' */
++		temp = temp->d_parent;
++		depth++;
++	}
++
++	// is root directory
++	if (depth == 0) {
++		return kstrdup(".", GFP_KERNEL); // return empty string for root
++	}
++
++	result = kmalloc(total_len + 1, GFP_KERNEL);
++	if (!result)
++		goto cleanup;
++
++	result[0] = '\0';
++	for (i = depth - 1; i > 0; i--) {
++		if (i < depth - 1)
++			strcat(result, "/");
++		strcat(result, path_components[i]);
++	}
++	
++cleanup:
++	for (i = 0; i < depth; i++) {
++		kfree(path_components[i]);
++	}
++
++	return result;
++}
++
++/* 原子性文件同步函数 - 使用相对路径 */
++int ramfs_sync_file_to_disk(struct file *file)
++{
++	struct super_block *sb = file->f_path.dentry->d_sb;
++	struct ramfs_fs_info *fsi;
++	struct dentry *dentry = file->f_path.dentry;
++	int ret = 0;
++	char *sync_path = NULL;
++	char *sync_pathdir = NULL;
++	char *relative_dir = NULL;
++	char *source_path = NULL;
++	char *path_buffer = NULL;
++
++	/* 获取文件系统信息 */
++	if (!sb || !sb->s_fs_info) {
++		return 0;
++	}
++
++	fsi = (struct ramfs_fs_info *)sb->s_fs_info;
++
++	/* 检查同步是否启用 */
++	if (!fsi->sync_enabled || !fsi->mount_opts.sync_dir) {
++		return 0;
++	}
++
++	/* 构建相对路径 */
++	relative_dir = build_relative_dir(dentry, sb->s_root);
++	if (!relative_dir) {
++		return -ENOMEM;
++	}
++
++	/* 获取源文件的完整路径 */
++	path_buffer = kmalloc(PATH_MAX, GFP_KERNEL);
++	if (!path_buffer) {
++		ret = -ENOMEM;
++		goto cleanup;
++	}
++
++	source_path = d_path(&file->f_path, path_buffer, PATH_MAX);
++	if (IS_ERR(source_path)) {
++		ret = PTR_ERR(source_path);
++		printk(KERN_ERR "ramfs: Failed to get source path, ret=%d\n", ret);
++		goto cleanup;
++	}
++
++	/* 使用相对路径构造同步路径 */
++	sync_path = kasprintf(GFP_KERNEL, "%s/%s/%s",
++				 fsi->mount_opts.sync_dir, relative_dir, dentry->d_name.name);
++	sync_pathdir = kasprintf(GFP_KERNEL, "%s/%s",
++				 fsi->mount_opts.sync_dir, relative_dir);
++
++	if (!sync_path || !sync_pathdir) {
++		ret = -ENOMEM;
++		goto cleanup;
++	}
++
++	printk(KERN_INFO "ramfs: Syncing '%s' -> '%s'\n", source_path, sync_path);
++
++	mutex_lock(&fsi->sync_mutex);
++
++	ret = ramfs_sync_with_cp(source_path, sync_path, sync_pathdir);
++	
++	mutex_unlock(&fsi->sync_mutex);
++
++cleanup:
++	kfree(relative_dir);
++	kfree(sync_path);
++	kfree(sync_pathdir);
++	kfree(path_buffer);
++	return ret;
++}
++
++/* 带持久化的 fsync 实现 */
++static int ramfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
++{
++	return ramfs_sync_file_to_disk(file);
++}
++
+ const struct file_operations ramfs_file_operations = {
+ 	.read_iter	= generic_file_read_iter,
+ 	.write_iter	= generic_file_write_iter,
+ 	.mmap		= generic_file_mmap,
+-	.fsync		= noop_fsync,
++	.fsync		= ramfs_fsync,  /* 使用我们的 fsync */
+ 	.splice_read	= generic_file_splice_read,
+ 	.splice_write	= iter_file_splice_write,
+ 	.llseek		= generic_file_llseek,
+diff --git a/fs/ramfs/inode.c b/fs/ramfs/inode.c
+index dc1f9e6d9..d0a3adc0a 100644
+--- a/fs/ramfs/inode.c
++++ b/fs/ramfs/inode.c
+@@ -23,6 +23,7 @@
+  * caches is sufficient.
+  */
+ 
++#include <linux/namei.h>
+ #include <linux/fs.h>
+ #include <linux/pagemap.h>
+ #include <linux/highmem.h>
+@@ -40,14 +41,6 @@
+ #include <linux/fs_parser.h>
+ #include "internal.h"
+ 
+-struct ramfs_mount_opts {
+-	umode_t mode;
+-};
+-
+-struct ramfs_fs_info {
+-	struct ramfs_mount_opts mount_opts;
+-};
+-
+ #define RAMFS_DEFAULT_MODE	0755
+ 
+ static const struct super_operations ramfs_ops;
+@@ -189,10 +182,12 @@ static const struct super_operations ramfs_ops = {
+ 
+ enum ramfs_param {
+ 	Opt_mode,
++	Opt_sync_dir,  /* 新增参数 */
+ };
+ 
+ const struct fs_parameter_spec ramfs_fs_parameters[] = {
+ 	fsparam_u32oct("mode",	Opt_mode),
++	fsparam_string("sync_dir", Opt_sync_dir),  /* 新增同步目录参数 */
+ 	{}
+ };
+ 
+@@ -204,12 +199,6 @@ static int ramfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
+ 
+ 	opt = fs_parse(fc, ramfs_fs_parameters, param, &result);
+ 	if (opt < 0) {
+-		/*
+-		 * We might like to report bad mount options here;
+-		 * but traditionally ramfs has ignored all mount options,
+-		 * and as it is used as a !CONFIG_SHMEM simple substitute
+-		 * for tmpfs, better continue to ignore other mount options.
+-		 */
+ 		if (opt == -ENOPARAM)
+ 			opt = 0;
+ 		return opt;
+@@ -219,6 +208,13 @@ static int ramfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
+ 	case Opt_mode:
+ 		fsi->mount_opts.mode = result.uint_32 & S_IALLUGO;
+ 		break;
++	case Opt_sync_dir:
++		kfree(fsi->mount_opts.sync_dir);
++		fsi->mount_opts.sync_dir = kstrdup(param->string, GFP_KERNEL);
++		if (!fsi->mount_opts.sync_dir)
++			return -ENOMEM;
++		fsi->sync_enabled = true;
++		break;
+ 	}
+ 
+ 	return 0;
+@@ -236,6 +232,22 @@ static int ramfs_fill_super(struct super_block *sb, struct fs_context *fc)
+ 	sb->s_op		= &ramfs_ops;
+ 	sb->s_time_gran		= 1;
+ 
++	/* 初始化同步相关 */
++	mutex_init(&fsi->sync_mutex);
++	
++	/* 验证同步目录是否存在 */
++	if (fsi->sync_enabled && fsi->mount_opts.sync_dir) {
++		struct path sync_path;
++		int ret = kern_path(fsi->mount_opts.sync_dir, LOOKUP_DIRECTORY, &sync_path);
++		if (ret) {
++			printk(KERN_ERR "ramfs: sync_dir %s not accessible\n", 
++				   fsi->mount_opts.sync_dir);
++			fsi->sync_enabled = false;
++		} else {
++			path_put(&sync_path);
++		}
++	}
++
+ 	inode = ramfs_get_inode(sb, NULL, S_IFDIR | fsi->mount_opts.mode, 0);
+ 	sb->s_root = d_make_root(inode);
+ 	if (!sb->s_root)
+@@ -251,7 +263,11 @@ static int ramfs_get_tree(struct fs_context *fc)
+ 
+ static void ramfs_free_fc(struct fs_context *fc)
+ {
+-	kfree(fc->s_fs_info);
++	struct ramfs_fs_info *fsi = fc->s_fs_info;
++	if (fsi) {
++		kfree(fsi->mount_opts.sync_dir);
++		kfree(fsi);
++	}
+ }
+ 
+ static const struct fs_context_operations ramfs_context_ops = {
+diff --git a/fs/ramfs/internal.h b/fs/ramfs/internal.h
+index 3257fc180..1107c94b9 100644
+--- a/fs/ramfs/internal.h
++++ b/fs/ramfs/internal.h
+@@ -6,4 +6,19 @@
+  */
+ 
+ 
++#include <linux/mutex.h>
+ extern const struct inode_operations ramfs_file_inode_operations;
++
++struct ramfs_mount_opts {
++	umode_t mode;
++	char *sync_dir;  /* 新增同步目录参数 */
++};
++
++struct ramfs_fs_info {
++	struct ramfs_mount_opts mount_opts;
++	struct mutex sync_mutex;
++	bool sync_enabled;
++};
++
++/* 持久化相关函数声明 */
++int ramfs_sync_file_to_disk(struct file *file);
