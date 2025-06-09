@@ -12,7 +12,7 @@ index 18b5500ea..344d1d6e0 100644
  #
  # Due to a historical design error, certain syscalls are numbered differently
 diff --git a/include/linux/sched.h b/include/linux/sched.h
-index 9b3cfe685..3e34a0a38 100644
+index 9b3cfe685..60a05f22d 100644
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h
 @@ -798,6 +798,12 @@ struct task_struct {
@@ -23,7 +23,7 @@ index 9b3cfe685..3e34a0a38 100644
 +	struct {
 +		spinlock_t        locks[1024]; /* Per-bucket locks for concurrent access */
 +		struct hlist_head head[1024];  /* Hash buckets for key-value pairs */
-+		int               ref_cnt;     /* Reference count for the store */
++		refcount_t           ref_cnt;     /* Reference count for the store */
 +	} *kv;
  
  #ifdef CONFIG_PREEMPT_NOTIFIERS
@@ -79,7 +79,7 @@ index 599cb9264..745318a25 100644
  obj-$(CONFIG_USERMODE_DRIVER) += usermode_driver.o
  obj-$(CONFIG_MODULES) += kmod.o
 diff --git a/kernel/exit.c b/kernel/exit.c
-index 890e5cb67..448be0633 100644
+index 890e5cb67..d58d6a6c8 100644
 --- a/kernel/exit.c
 +++ b/kernel/exit.c
 @@ -5,6 +5,7 @@
@@ -101,24 +101,16 @@ index 890e5cb67..448be0633 100644
  #include <linux/uaccess.h>
  #include <asm/unistd.h>
  #include <asm/mmu_context.h>
-@@ -872,6 +877,15 @@ void __noreturn do_exit(long code)
+@@ -872,6 +877,7 @@ void __noreturn do_exit(long code)
  		disassociate_ctty(1);
  	exit_task_namespaces(tsk);
  	exit_task_work(tsk);
-+	if (--tsk->kv->ref_cnt == 0) {
-+		/*
-+		 * If the kv store is empty, we can free it now.
-+		 * Otherwise, it will be freed when the last user
-+		 * of the kv store exits.
-+		 */
-+		pr_info("Freeing kv store for task %d\n", tsk->pid);
-+		cleanup_kv_store(tsk);
-+	}
++	cleanup_kv_store(tsk);
  	exit_thread(tsk);
  
  	/*
 diff --git a/kernel/fork.c b/kernel/fork.c
-index 23ffcf8a8..ef17aac79 100644
+index 23ffcf8a8..429320836 100644
 --- a/kernel/fork.c
 +++ b/kernel/fork.c
 @@ -110,6 +110,9 @@
@@ -138,7 +130,7 @@ index 23ffcf8a8..ef17aac79 100644
 +	/* init kv_store */
 +	if (clone_flags & CLONE_THREAD) { /* new thread */
 +		p->kv = current->kv;
-+		p->kv->ref_cnt++;
++		refcount_inc(&p->kv->ref_cnt);
 +	} else {
 +		init_kv_store(p);
 +	}
@@ -148,10 +140,10 @@ index 23ffcf8a8..ef17aac79 100644
  	 */
 diff --git a/kernel/kv_store.c b/kernel/kv_store.c
 new file mode 100644
-index 000000000..365b9a74e
+index 000000000..efeb819cb
 --- /dev/null
 +++ b/kernel/kv_store.c
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,133 @@
 +/**
 + * KV_STORE syscalls
 + *
@@ -171,10 +163,8 @@ index 000000000..365b9a74e
 +    struct hlist_node node;
 +};
 +
-+// asmlinkage long sys_write_kv(int k, int v); 449
-+SYSCALL_DEFINE2(write_kv, int, k, int, v)
-+{
-+    struct kv_node *entry, *old_entry = NULL;
++asmlinkage long kv_store_write(int k, int v) {
++     struct kv_node *entry, *old_entry = NULL;
 +    // struct hlist_node *tmp;
 +    unsigned int hash = k & 1023; // k % 1024
 +
@@ -209,10 +199,7 @@ index 000000000..365b9a74e
 +    return sizeof(int);
 +}
 +
-+
-+// asmlinkage long sys_read_kv(int k); 450
-+SYSCALL_DEFINE1(read_kv, int, k)
-+{
++asmlinkage long kv_store_read(int k) {
 +    struct kv_node *entry;
 +    int ret = -1;
 +    unsigned int hash = k & 1023; // k % 1024
@@ -233,6 +220,19 @@ index 000000000..365b9a74e
 +    return ret;
 +}
 +
++// asmlinkage long sys_write_kv(int k, int v); 449
++SYSCALL_DEFINE2(write_kv, int, k, int, v)
++{
++    return kv_store_write(k, v);
++}
++
++
++// asmlinkage long sys_read_kv(int k); 450
++SYSCALL_DEFINE1(read_kv, int, k)
++{
++    return kv_store_read(k);
++}
++
 +void init_kv_store(struct task_struct *task)
 +{
 +    int i;
@@ -243,7 +243,7 @@ index 000000000..365b9a74e
 +        return;
 +    }
 +
-+    task->kv->ref_cnt = 1; // Initialize reference count
++    refcount_set(&task->kv->ref_cnt, 1);
 +    for (i = 0; i < 1024; i++) {
 +        spin_lock_init(&task->kv->locks[i]);
 +        INIT_HLIST_HEAD(&task->kv->head[i]);
@@ -259,6 +259,9 @@ index 000000000..365b9a74e
 +    if (!task->kv)
 +        return;
 +
++    if (!refcount_dec_and_test(&task->kv->ref_cnt)) return;
++    pr_info("Freeing kv store for task %d (ref_cnt = %d)\n", task->pid, refcount_read(&task->kv->ref_cnt));
++
 +    for (i = 0; i < 1024; i++) {
 +        spin_lock(&task->kv->locks[i]);
 +        hlist_for_each_entry_safe(entry, tmp, &task->kv->head[i], node) {
@@ -271,3 +274,7 @@ index 000000000..365b9a74e
 +    kfree(task->kv);
 +    task->kv = NULL;
 +}
++
++EXPORT_SYMBOL(kv_store_write);
++EXPORT_SYMBOL(kv_store_read);
+\ No newline at end of file
