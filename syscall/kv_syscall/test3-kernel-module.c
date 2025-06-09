@@ -62,6 +62,9 @@ static int kv_test_thread(void *arg) {
         
         schedule();
     }
+
+    *(struct task_struct **)arg = NULL; // Clear the thread pointer to avoid dangling references
+
     return 0;
 }
 
@@ -70,7 +73,7 @@ static int __init kv_test_init(void) {
     pr_info("KV Test Module with KASAN and LOCKDEP starting.\n");
 
     for (i = 0; i < NUM_THREADS; i++) {
-        threads[i] = kthread_run(kv_test_thread, NULL, "kv_test_thread_%d", i);
+        threads[i] = kthread_run(kv_test_thread, &threads[i], "kv_test_thread_%d", i);
         if (IS_ERR(threads[i])) {
             pr_err("Failed to create thread %d\n", i);
             threads[i] = NULL;
