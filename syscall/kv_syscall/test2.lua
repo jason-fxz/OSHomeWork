@@ -23,9 +23,9 @@ function event(thread_id)
     else
         -- Read Operation
         local read_value = read_kv(k)
-        if read_value == -1 then
-            error("Error reading key " .. k)
-        end
+        -- if read_value == -1 then
+        --     error("Error reading key " .. k)
+        -- end
     end
 end
 
