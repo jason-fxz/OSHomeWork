@@ -2,3 +2,8 @@ test*
 !*.c
 !*.lua
 *.so
+*.o
+*.cmd
+*.mod.c
+Module.symvers
+modules.order

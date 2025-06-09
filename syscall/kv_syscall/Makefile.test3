@@ -1,0 +1,17 @@
+# Makefile for KV test kernel module
+
+
+
+
+# 内核源码路径（指向你的内核源码目录）
+KERNEL_SRC := /home/jasonfan/kvm/kernel/linux-5.15.178
+# KERNEL_SRC := /lib/modules/$(shell uname -r)/build
+
+PWD := $(shell pwd)
+
+
+kbuild:
+	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) modules
+
+clean:
+	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) clean

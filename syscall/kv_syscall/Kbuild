@@ -1,0 +1,4 @@
+EXTRA_CFLAGS = -Wall -g
+
+testmodule-y := test3-kernel-module.o
+obj-m += testmodule.o
