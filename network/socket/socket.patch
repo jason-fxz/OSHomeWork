@@ -1,0 +1,417 @@
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index 18b5500ea..157f99a7f 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -370,6 +370,7 @@
+ 446	common	landlock_restrict_self	sys_landlock_restrict_self
+ 447	common	memfd_secret		sys_memfd_secret
+ 448	common	process_mrelease	sys_process_mrelease
++449	common	configure_socket_fairness	sys_configure_socket_fairness
+ 
+ #
+ # Due to a historical design error, certain syscalls are numbered differently
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 9b3cfe685..90b755ef3 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -36,6 +36,9 @@
+ #include <linux/kcsan.h>
+ #include <asm/kmap_size.h>
+ 
++#ifdef CONFIG_SOCKET_FAIR
++#include <linux/socket_fair.h>
++#endif
+ /* task_struct member predeclarations (sorted alphabetically): */
+ struct audit_context;
+ struct backing_dev_info;
+@@ -1180,6 +1183,10 @@ struct task_struct {
+ 	/* Pressure stall state */
+ 	unsigned int			psi_flags;
+ #endif
++#ifdef CONFIG_SOCKET_FAIR
++	/* Socket fairness management */
++	struct socket_fairness		socket_fair;
++#endif
+ #ifdef CONFIG_TASK_XACCT
+ 	/* Accumulated RSS usage: */
+ 	u64				acct_rss_mem1;
+diff --git a/include/linux/socket_fair.h b/include/linux/socket_fair.h
+new file mode 100644
+index 000000000..b4e96c0e8
+--- /dev/null
++++ b/include/linux/socket_fair.h
+@@ -0,0 +1,62 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _LINUX_SOCKET_FAIR_H
++#define _LINUX_SOCKET_FAIR_H
++
++#include <linux/types.h>
++#include <linux/spinlock.h>
++#include <linux/atomic.h>
++
++/**
++ * Socket fairness management structure
++ * This structure tracks socket resource allocation for each thread
++ */
++struct socket_fairness {
++	/* Maximum number of sockets allowed for this thread */
++	int max_socket_allowed;
++	
++	/* Current number of sockets opened by this thread */
++	atomic_t current_socket_count;
++	
++	/* Lock to protect the fairness structure */
++	spinlock_t lock;
++};
++
++/* Default socket limits */
++#define SOCKET_FAIR_DEFAULT_MAX		1024
++
++/**
++ * Initialize socket fairness for a task
++ */
++static inline void socket_fairness_init(struct socket_fairness *sf)
++{
++	sf->max_socket_allowed = SOCKET_FAIR_DEFAULT_MAX;
++	atomic_set(&sf->current_socket_count, 0);
++	spin_lock_init(&sf->lock);
++}
++
++/**
++ * Check if socket allocation is allowed for current task
++ */
++bool socket_fairness_check_allowed(struct task_struct *task);
++
++/**
++ * Increment socket count for current task
++ */
++int socket_fairness_inc_count(struct task_struct *task);
++
++/**
++ * Decrement socket count for current task
++ */
++void socket_fairness_dec_count(struct task_struct *task);
++
++/**
++ * Configure socket fairness for a specific task
++ */
++int socket_fairness_configure(pid_t pid, int max_sockets);
++
++/**
++ * User space system call interface
++ */
++long configure_socket_fairness(pid_t thread_id, int max_socket_allowed);
++
++#endif /* _LINUX_SOCKET_FAIR_H */
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index b8037a46f..dca0ba6da 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -855,6 +855,9 @@ asmlinkage long sys_shutdown(int, int);
+ asmlinkage long sys_sendmsg(int fd, struct user_msghdr __user *msg, unsigned flags);
+ asmlinkage long sys_recvmsg(int fd, struct user_msghdr __user *msg, unsigned flags);
+ 
++/* net/socket_fair.c */
++asmlinkage long sys_configure_socket_fairness(pid_t thread_id, int max_socket_allowed);
++
+ /* mm/filemap.c */
+ asmlinkage long sys_readahead(int fd, loff_t offset, size_t count);
+ 
+@@ -917,6 +920,7 @@ asmlinkage long sys_madvise(unsigned long start, size_t len, int behavior);
+ asmlinkage long sys_process_madvise(int pidfd, const struct iovec __user *vec,
+ 			size_t vlen, int behavior, unsigned int flags);
+ asmlinkage long sys_process_mrelease(int pidfd, unsigned int flags);
++asmlinkage long sys_configure_socket_fairness(pid_t thread_id, int max_socket_allowed);
+ asmlinkage long sys_remap_file_pages(unsigned long start, unsigned long size,
+ 			unsigned long prot, unsigned long pgoff,
+ 			unsigned long flags);
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index 17a5a317f..890d8709a 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -879,9 +879,11 @@ __SYSCALL(__NR_memfd_secret, sys_memfd_secret)
+ #endif
+ #define __NR_process_mrelease 448
+ __SYSCALL(__NR_process_mrelease, sys_process_mrelease)
++#define __NR_configure_socket_fairness 449
++__SYSCALL(__NR_configure_socket_fairness, sys_configure_socket_fairness)
+ 
+ #undef __NR_syscalls
+-#define __NR_syscalls 449
++#define __NR_syscalls 450
+ 
+ /*
+  * 32 bit systems traditionally used different
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 23ffcf8a8..1699a92fd 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -2171,6 +2171,11 @@ static __latent_entropy struct task_struct *copy_process(
+ 	p->bpf_ctx = NULL;
+ #endif
+ 
++#ifdef CONFIG_SOCKET_FAIR
++	/* Initialize socket fairness */
++	socket_fairness_init(&p->socket_fair);
++#endif
++
+ 	/* Perform scheduler related setup. Assign this task to a CPU. */
+ 	retval = sched_fork(clone_flags, p);
+ 	if (retval)
+diff --git a/net/Kconfig b/net/Kconfig
+index 76a338594..ca26af61d 100644
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -60,6 +60,22 @@ config SKB_EXTENSIONS
+ 
+ menu "Networking options"
+ 
++config SOCKET_FAIR
++	bool "Socket fairness per-thread resource management"
++	default y
++	help
++	  Enable per-thread socket resource limits to prevent threads from
++	  monopolizing network connections. Each thread can have a configurable
++	  limit on the maximum number of sockets it can open simultaneously.
++
++	  This helps prevent resource starvation in multi-threaded applications
++	  and protects against socket exhaustion attacks.
++
++	  The feature only activates when explicitly configured via the
++	  configure_socket_fairness() system call. Overhead is minimal.
++
++	  If unsure, say Y.
++
+ source "net/packet/Kconfig"
+ source "net/unix/Kconfig"
+ source "net/tls/Kconfig"
+diff --git a/net/Makefile b/net/Makefile
+index 6a62e5b27..04066af12 100644
+--- a/net/Makefile
++++ b/net/Makefile
+@@ -8,6 +8,7 @@
+ 
+ obj-y				:= devres.o socket.o core/
+ 
++obj-$(CONFIG_SOCKET_FAIR)	+= socket_fair.o
+ obj-$(CONFIG_COMPAT)		+= compat.o
+ 
+ # LLC has to be linked before the files in net/802/
+diff --git a/net/socket.c b/net/socket.c
+index bb2a209e3..a22f0b1ed 100644
+--- a/net/socket.c
++++ b/net/socket.c
+@@ -97,6 +97,10 @@
+ #include <net/sock.h>
+ #include <linux/netfilter.h>
+ 
++#ifdef CONFIG_SOCKET_FAIR
++#include <linux/socket_fair.h>
++#endif
++
+ #include <linux/if_tun.h>
+ #include <linux/ipv6_route.h>
+ #include <linux/route.h>
+@@ -644,6 +648,13 @@ static void __sock_release(struct socket *sock, struct inode *inode)
+ 	if (sock->ops) {
+ 		struct module *owner = sock->ops->owner;
+ 
++#ifdef CONFIG_SOCKET_FAIR
++		/* Decrement socket count when releasing user-space socket */
++		if (sock->sk && sock->file) {
++			socket_fairness_dec_count(current);
++		}
++#endif
++
+ 		if (inode)
+ 			inode_lock(inode);
+ 		sock->ops->release(sock);
+@@ -1442,6 +1453,13 @@ int __sock_create(struct net *net, int family, int type, int protocol,
+ 	if (err)
+ 		return err;
+ 
++#ifdef CONFIG_SOCKET_FAIR
++	/* Check socket fairness limits for user-space sockets */
++	if (!kern && !socket_fairness_check_allowed(current)) {
++		return -EMFILE; /* Too many open files per process */
++	}
++#endif
++
+ 	/*
+ 	 *	Allocate the socket and allow the family to set things up. if
+ 	 *	the protocol is 0, the family is instructed to select an appropriate
+@@ -1507,6 +1525,14 @@ int __sock_create(struct net *net, int family, int type, int protocol,
+ 	err = security_socket_post_create(sock, family, type, protocol, kern);
+ 	if (err)
+ 		goto out_sock_release;
++
++#ifdef CONFIG_SOCKET_FAIR
++	/* Increment socket count for successful user-space socket creation */
++	if (!kern) {
++		socket_fairness_inc_count(current);
++	}
++#endif
++
+ 	*res = sock;
+ 
+ 	return 0;
+diff --git a/net/socket_fair.c b/net/socket_fair.c
+new file mode 100644
+index 000000000..640d95dc2
+--- /dev/null
++++ b/net/socket_fair.c
+@@ -0,0 +1,154 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Socket fairness implementation
++ * Provides per-thread socket resource limits for network fairness
++ */
++
++#include <linux/socket_fair.h>
++#include <linux/sched.h>
++#include <linux/pid.h>
++#include <linux/rcupdate.h>
++#include <linux/spinlock.h>
++#include <linux/atomic.h>
++#include <linux/errno.h>
++#include <linux/syscalls.h>
++
++/**
++ * socket_fairness_init - Initialize socket fairness structure for a task
++ * @fair: Socket fairness structure to initialize
++ */
++void socket_fairness_init(struct socket_fairness *fair)
++{
++	spin_lock_init(&fair->lock);
++	atomic_set(&fair->current_socket_count, 0);
++	fair->max_socket_allowed = 0; /* Default: no limit */
++}
++EXPORT_SYMBOL(socket_fairness_init);
++
++/**
++ * socket_fairness_check_allowed - Check if socket allocation is allowed
++ * @task: Task to check socket limits for
++ * 
++ * Returns true if socket allocation is allowed, false otherwise
++ */
++bool socket_fairness_check_allowed(struct task_struct *task)
++{
++	bool allowed = true;
++
++	if (!task)
++		return true;
++
++#ifdef CONFIG_SOCKET_FAIR
++	struct socket_fairness *sf;
++	unsigned long flags;
++	int current_count, max_allowed;
++	
++	sf = &task->socket_fair;
++	
++	spin_lock_irqsave(&sf->lock, flags);
++	
++	current_count = atomic_read(&sf->current_socket_count);
++	max_allowed = sf->max_socket_allowed;
++	
++	if (current_count >= max_allowed) {
++		allowed = false;
++	}
++	
++	spin_unlock_irqrestore(&sf->lock, flags);
++#endif
++
++	return allowed;
++}
++EXPORT_SYMBOL(socket_fairness_check_allowed);
++
++/**
++ * socket_fairness_inc_count - Increment socket count for task
++ * @task: Task to increment socket count for
++ * 
++ * Returns 0 on success, negative error code on failure
++ */
++int socket_fairness_inc_count(struct task_struct *task)
++{
++	if (!task)
++		return -EINVAL;
++
++#ifdef CONFIG_SOCKET_FAIR
++	struct socket_fairness *sf = &task->socket_fair;
++	atomic_inc(&sf->current_socket_count);
++#endif
++
++	return 0;
++}
++EXPORT_SYMBOL(socket_fairness_inc_count);
++
++/**
++ * socket_fairness_dec_count - Decrement socket count for task
++ * @task: Task to decrement socket count for
++ */
++void socket_fairness_dec_count(struct task_struct *task)
++{
++	if (!task)
++		return;
++
++#ifdef CONFIG_SOCKET_FAIR
++	struct socket_fairness *sf = &task->socket_fair;
++	atomic_dec(&sf->current_socket_count);
++#endif
++}
++EXPORT_SYMBOL(socket_fairness_dec_count);
++
++/**
++ * socket_fairness_configure - Configure socket fairness for a task
++ * @pid: Process ID to configure
++ * @max_sockets: Maximum number of sockets allowed
++ * 
++ * Returns 0 on success, negative error code on failure
++ */
++int socket_fairness_configure(pid_t pid, int max_sockets)
++{
++	struct task_struct *task;
++	int ret = 0;
++
++	/* Validate parameters */
++	if (max_sockets < 0 || max_sockets > 65536)
++		return -EINVAL;
++
++	/* Find the task */
++	rcu_read_lock();
++	task = find_task_by_vpid(pid);
++	if (task)
++		get_task_struct(task);
++	rcu_read_unlock();
++
++	if (!task)
++		return -ESRCH;
++
++#ifdef CONFIG_SOCKET_FAIR
++	struct socket_fairness *sf;
++	unsigned long flags;
++	
++	sf = &task->socket_fair;
++	
++	spin_lock_irqsave(&sf->lock, flags);
++	sf->max_socket_allowed = max_sockets;
++	spin_unlock_irqrestore(&sf->lock, flags);
++#else
++	ret = -ENOSYS;
++#endif
++
++	put_task_struct(task);
++	return ret;
++}
++EXPORT_SYMBOL(socket_fairness_configure);
++
++/**
++ * configure_socket_fairness - User-space interface function
++ * @thread_id: Thread ID (pthread_t converted to pid_t)
++ * @max_socket_allowed: Maximum sockets allowed for this thread
++ * 
++ * Returns 0 on success, non-zero error codes on failure
++ */
++SYSCALL_DEFINE2(configure_socket_fairness, pid_t, thread_id, int, max_socket_allowed)
++{
++	return socket_fairness_configure(thread_id, max_socket_allowed);
++}
