@@ -23,8 +23,8 @@
 } while(0)
 
 int main(int argc, char* argv[]) {
-    int nGPUs = 3;
-    size_t dataSize = 1024*1024*32;
+    int nGPUs = 4;
+    size_t dataSize = 256*1024*1024;
     int nIters = 100;
 
     // 1. 选取设备
@@ -66,7 +66,6 @@ int main(int argc, char* argv[]) {
     CHECK(cudaEventRecord(start, streams[0]));
 
     for(int iter = 0; iter < nIters; ++iter) {
-        printf("Iteration %d/%d\n", iter + 1, nIters);
         NCCL_CHECK(ncclGroupStart());
         for(int i = 0; i < nGPUs; ++i) {
             CHECK(cudaSetDevice(devs[i]));
@@ -75,12 +74,12 @@ int main(int argc, char* argv[]) {
         }
         NCCL_CHECK(ncclGroupEnd());
     }
+    CHECK(cudaSetDevice(0));
+    CHECK(cudaEventRecord(stop, streams[0]));
     for(int i = 0; i < nGPUs; ++i) {
         CHECK(cudaSetDevice(devs[i]));
         CHECK(cudaStreamSynchronize(streams[i]));
     }
-    CHECK(cudaSetDevice(0));
-    CHECK(cudaEventRecord(stop, streams[0]));
     CHECK(cudaEventSynchronize(stop));
 
     float ms = 0;
@@ -90,7 +89,7 @@ int main(int argc, char* argv[]) {
     double totalBytes = double(nIters) * dataSize * sizeof(float);
     double gb = totalBytes / (1024 * 1024 * 1024);
     double sec = ms / 1000.0;
-    printf("AllReduce average bandwidth: %.2f GB/s per GPU (total time %.2f ms)\n", gb/sec, ms);
+    printf("AllReduce average bandwidth: %.2f GB/s per GPU (total time %.2f ms)\n", gb/sec*(2*nGPUs-2) / double(nGPUs), ms);
 
     // 7. 清理
     for(int i = 0; i < nGPUs; ++i) {
