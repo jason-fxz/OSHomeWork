@@ -90,7 +90,7 @@ int main(int argc, char* argv[]) {
     double totalBytes = double(nIters) * dataSize * sizeof(float);
     double gb = totalBytes / (1024 * 1024 * 1024);
     double sec = ms / 1000.0;
-    printf("AllReduce average bandwidth: %.2f GB/s per GPU (total time %.2f ms)\n", gb/sec/nGPUs, ms);
+    printf("AllReduce average bandwidth: %.2f GB/s per GPU (total time %.2f ms)\n", gb/sec, ms);
 
     // 7. 清理
     for(int i = 0; i < nGPUs; ++i) {
