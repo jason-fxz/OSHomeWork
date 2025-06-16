@@ -1,16 +1,16 @@
-CC = gcc
-CFLAGS = -ldl -Wall
-LDFLAGS = -lpthread
+CC = g++
+CFLAGS = -Wall -Wextra
+TARGET = test_vdso_all test_vdso
 
-all: test_vdso
+.PHONY: all clean
 
-test_vdso: test_vdso.c
-	test -n "$(LINUX_HEADERS_DIR)" || (echo "LINUX_HEADERS_DIR is not set"; exit 1)
-	$(CC) $(CFLAGS) -I$(LINUX_HEADERS_DIR) -o test_vdso test_vdso.c
+all: $(TARGET)
 
-copy: test_vdso
-	if ! mountpoint -q $(QEMU_TEST_DIR)/rootfs; then sudo mount -o loop $(QEMU_TEST_DIR)/rootfs.img $(QEMU_TEST_DIR)/rootfs; fi && \
-	sudo cp test_vdso $(QEMU_TEST_DIR)/rootfs/tests
+test_vdso_all: test_vdso_all.cpp
+	$(CC) $(CFLAGS) -o $@ $<
 
+test_vdso: test_vdso.cpp
+	$(CC) $(CFLAGS) -o $@ $<
+	
 clean:
-	rm -f test_vdso
+	rm -f $(TARGET)
