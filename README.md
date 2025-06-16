@@ -50,5 +50,6 @@ See tutorial at [https://github.com/peterzheng98/os-2024-tutorial](https://githu
   - [x] learn: [数据包结构](https://zhuanlan.zhihu.com/p/532166995)
   - [x] tcpdump [impl](./network/tcpdump/)
   - [x] socket [impl](./network/socket/)
-- [ ] 实践：NCCL
+- [x] 实践：NCCL
+  - [impl](./network/nccl/)
 - [ ] 设计：DPDK
