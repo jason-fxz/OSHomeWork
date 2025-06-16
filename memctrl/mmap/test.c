@@ -16,6 +16,10 @@ extern int file_mmap_write(const char *filename, size_t offset, char *content);
 #define PAGE_SIZE 4096
 #define LARGE_SIZE (1024 * 1024) // 1MB
 
+int is_root() {
+  return (geteuid() == 0);
+}
+
 uint64_t get_physical_address(void *virtual_address) {
   int pagemap_fd = open("/proc/self/pagemap", O_RDONLY);
 
@@ -62,25 +66,23 @@ void test_mmap_remap() {
   size_t size = PAGE_SIZE * 2;
   void *addr1 = mmap(NULL, size, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  
-  memset(addr1, 0xAA, size);
-  void *p_addr1 = (void*)get_physical_address(addr1);
-  printf("addr1: %p -> %p\n", addr1, p_addr1);
 
+  // Write pattern to memory
+  memset(addr1, 0xAA, size);
   // Remap memory
   void *addr2 = mmap_remap(addr1, size);
   assert(addr2 != NULL);
 
-  memset(addr2, 0xAA, size);
-  void *p_addr2 = (void*)get_physical_address(addr2);
-
   // Verify addresses are different
-  assert(addr1 == addr2), "Virtual Addresses should be same";
-  assert(p_addr1 != p_addr2),
-      "Physical addresses should be different";
+  assert(addr1 != addr2);
+  assert(get_physical_address(addr1) != get_physical_address(addr2)),
+      "Physical addresses are same";
 
+  // Test pattern preservation
+  for (size_t i = 0; i < size; i++) {
+    assert(((unsigned char *)addr2)[i] == 0xAA);
+  }
 
-  
   // Cleanup
   munmap(addr1, size);
   munmap(addr2, size);
@@ -92,7 +94,7 @@ void test_file_operations(const char *filename, size_t filesize) {
 
   // Create test file
   create_test_file(filename, filesize);
-  
+
   // Test 1: Read-after-write
   char content1[] = "TEST_CONTENT_1";
   assert(file_mmap_write(filename, 0, content1) == 0);
@@ -134,6 +136,13 @@ void test_file_operations(const char *filename, size_t filesize) {
 }
 
 int main() {
+  // Check for root permissions
+  if (!is_root()) {
+    fprintf(stderr, "WARNING: This program requires root privileges to access /proc/self/pagemap.\n");
+    fprintf(stderr, "Please run with sudo or as root user.\n");
+    return 1;
+  }
+
   // Test 1: Page table entry validation
   test_mmap_remap();
   printf("Remapping Passed.\n");
@@ -146,10 +155,6 @@ int main() {
   test_file_operations(empty_file, 0);          // Empty file
   test_file_operations(small_file, PAGE_SIZE);  // 4KB file
   test_file_operations(large_file, LARGE_SIZE); // 1MB file
-
-  // Pause
-  printf("Press Enter to continue...\n");
-  getchar();
 
   // Cleanup test files
   unlink(empty_file);

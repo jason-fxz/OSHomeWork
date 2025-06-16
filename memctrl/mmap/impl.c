@@ -17,15 +17,16 @@
  *          映射失败时返回 NULL。
  */
 void* mmap_remap(void *addr, size_t size) {
-    if (addr != NULL) {
-        // 尝试解除原有映射
-        munmap(addr, size);
-    }
     void *new_addr = mmap(NULL, size, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (new_addr == MAP_FAILED) {
         perror("mmap failed");
         return NULL;
+    }
+    // copy old data to new area
+    if (addr != NULL) {
+        memcpy(new_addr, addr, size);
+        munmap(addr, size);
     }
     return new_addr;
     // return NULL;
@@ -52,7 +53,7 @@ int file_mmap_write(const char* filename, size_t offset, char* content) {
     }
     
     size_t content_len = strlen(content);
-    size_t total_len = offset + content_len;
+    off_t total_len = offset + content_len;
     
     // 获取文件大小
     struct stat st;
