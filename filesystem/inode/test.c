@@ -7,7 +7,7 @@
 #include <fcntl.h>
 
 // 引入你的实现
-extern int get_xattr(const char *path, const char *name, char *value, size_t size, int flags);
+extern int get_xattr(const char *path, const char *name, char *value, size_t size);
 extern int set_xattr(const char *path, const char *name, const char *value, size_t size, int flags);
 extern int remove_xattr(const char *path, const char *name);
 extern ssize_t list_xattr(const char *path, char *list, size_t size);
@@ -32,7 +32,7 @@ typedef struct {
 // 完整的测试流程
 void run_full_test(const char *path, const char *test_type, 
                   int (*set_fn)(const char*, const char*, const char*, size_t, int),
-                  int (*get_fn)(const char*, const char*, char*, size_t, int),
+                  int (*get_fn)(const char*, const char*, char*, size_t),
                   ssize_t (*list_fn)(const char*, char*, size_t),
                   int (*remove_fn)(const char*, const char*),
                   TestResults *results) {
@@ -50,7 +50,7 @@ void run_full_test(const char *path, const char *test_type,
     
     // 2. 获取属性
     memset(results->get_buffer, 0, sizeof(results->get_buffer));
-    results->get_result = get_fn(path, attr_name, results->get_buffer, sizeof(results->get_buffer), 0);
+    results->get_result = get_fn(path, attr_name, results->get_buffer, sizeof(results->get_buffer));
     printf("获取属性: %s (返回值: %d, 值: \"%s\")\n", 
            results->get_result >= 0 ? "成功" : "失败", results->get_result, 
            results->get_result >= 0 ? results->get_buffer : "");
@@ -77,7 +77,7 @@ void run_full_test(const char *path, const char *test_type,
            results->remove_result == 0 ? "成功" : "失败", results->remove_result);
     
     // 5. 尝试获取已删除属性
-    results->get_after_remove_result = get_fn(path, attr_name, results->get_buffer, sizeof(results->get_buffer), 0);
+    results->get_after_remove_result = get_fn(path, attr_name, results->get_buffer, sizeof(results->get_buffer));
     printf("获取已删除属性: %s (返回值: %d)\n", 
            results->get_after_remove_result < 0 ? "正确返回错误" : "错误", results->get_after_remove_result);
 }
@@ -147,7 +147,7 @@ int main(int argc, char *argv[]) {
     
     // 然后用标准库实现测试
     run_full_test(path, "标准库",  (int (*)(const char*, const char*, const char*, size_t, int))setxattr, 
-             (int (*)(const char*, const char*, char*, size_t, int))getxattr, listxattr, removexattr, &standard_results);
+             (int (*)(const char*, const char*, char*, size_t))getxattr, listxattr, removexattr, &standard_results);
 
     // 比较结果
     compare_results(&custom_results, &standard_results);
