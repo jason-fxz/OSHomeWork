@@ -1,4 +1,4 @@
-#!/usr/bin/sh
+#!/bin/sh
 
 mkdir -p /tmp/ramfs_sync
 mkdir -p /mnt/ramfs
@@ -17,3 +17,7 @@ fsync /mnt/ramfs/233/test2.txt
 
 ls -al /tmp/ramfs_sync/
 cat /tmp/ramfs_sync/test.txt
+
+touch /mnt/ramfs/testfile_single.dat
+touch /mnt/ramfs/multitest.dat
+touch /mnt/ramfs/crashtest.dat
